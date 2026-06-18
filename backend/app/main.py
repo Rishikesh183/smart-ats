@@ -55,12 +55,14 @@ class EvalRequest(BaseModel):
 
 @app.on_event("startup")
 async def startup():
-    logger.info("Warming up embedding model and loading profiles...")
+    logger.info("Warming up embedder and building FAISS index...")
     try:
+        from app.llm.embedder import warmup_embedder
         from app.pipeline.extract import get_all_profiles
         from app.pipeline.retrieval import build_index
+        warmup_embedder()          # no-op for API backend; loads model for local backend
         profiles = get_all_profiles()
-        build_index(profiles)
+        build_index(profiles)      # reads from disk cache if already built
         logger.info(f"Ready: {len(profiles)} profiles indexed")
     except Exception as e:
         logger.warning(f"Startup warmup failed (continuing anyway): {e}")
