@@ -255,10 +255,14 @@ def main():
         print(f"[precompute] FAISS index saved → {faiss_path}")
 
     # ── Step 3: JD embedding → retrieve top-K ────────────────────────────────
-    print(f"[precompute] Retrieving top-{args.top_k} candidates for JD …")
+    jd_emb_path = out_dir / "jd_embedding.npy"
+    print(f"[precompute] Embedding JD …")
     encode = get_embedder()
     jd_emb = encode([JD_TEXT]).astype(np.float32)
+    np.save(str(jd_emb_path), jd_emb)
+    print(f"[precompute] JD embedding saved → {jd_emb_path}")
 
+    print(f"[precompute] Retrieving top-{args.top_k} candidates for JD …")
     scores_arr, indices = index.search(jd_emb, args.top_k)
     top_k_ids = [ordered_ids[i] for i in indices[0]]
     print(f"[precompute] Top-{args.top_k} candidates retrieved.")
@@ -315,11 +319,4 @@ def main():
             # Rate-limit: Claude Sonnet burst limit
             time.sleep(0.5)
 
-    print(f"[precompute] Done! All artifacts saved to {out_dir}/")
-    print("  • candidate_features.jsonl")
-    print("  • faiss_index.pkl")
-    print("  • claude_scores.jsonl")
-
-
-if __name__ == "__main__":
-    main()
+    print(f"[precompute] Done! A

@@ -226,9 +226,15 @@ def main():
     index = faiss_data["index"]
     ordered_ids: list[str] = faiss_data["candidate_ids"]
 
-    # ── Embed JD ──────────────────────────────────────────────────────────────
-    encode = get_local_embedder()
-    jd_emb = encode([JD_TEXT]).astype(np.float32)
+    # ── Load or compute JD embedding ─────────────────────────────────────────
+    jd_emb_path = artifacts_dir / "jd_embedding.npy"
+    if jd_emb_path.exists():
+        print("[rank] Loading pre-computed JD embedding …")
+        jd_emb = np.load(str(jd_emb_path)).astype(np.float32)
+    else:
+        print("[rank] No saved JD embedding — computing locally (must match precompute model) …")
+        encode = get_local_embedder()
+        jd_emb = encode([JD_TEXT]).astype(np.float32)
 
     # ── FAISS search — retrieve top candidates ────────────────────────────────
     # Retrieve more than 100 so we have buffer after filtering honeypots
@@ -299,10 +305,4 @@ def main():
             })
 
     elapsed = time.time() - t_start
-    print(f"\n[rank] Done in {elapsed:.1f}s — {len(top)} candidates written → {out_path}")
-
-    # Quick sanity check
-    if len(top) != args.top_n:
-        print(f"WARNING: only {len(top)} rows written, expected {args.top_n}")
-    else:
-        print("Submission valid: " + str(len(top)) + " rows, columns: candidate_id, rank, score, reasoning")
+    print(f"\n[rank] Done in {elapsed:.1f}s — {len(top)} candida

@@ -208,11 +208,14 @@ def compute_experience_score(cand: dict) -> tuple[float, bool]:
     else:
         is_purely_consulting = False
 
-    # Bonus for product-company experience (company_size signals)
+    # Bonus for product-company experience
+    # Schema company_size values: "1-10","11-50","51-200","201-500","501-1000","1001-5000","5001-10000","10001+"
+    # Smaller companies more likely to be product companies (excluding big consulting)
+    product_sizes = {"1-10", "11-50", "51-200", "201-500", "501-1000"}
     product_months = sum(
         j.get("duration_months", 0) or 0
         for j in history
-        if j.get("company_size", "") in ("startup", "scaleup", "mid-size", "enterprise")
+        if j.get("company_size", "") in product_sizes
         and not any(f in _lower(j.get("company", "")) for f in CONSULTING_FIRMS)
     )
     if product_months >= 36:
@@ -221,10 +224,4 @@ def compute_experience_score(cand: dict) -> tuple[float, bool]:
     return exp_score, is_purely_consulting
 
 
-# ─── education score ──────────────────────────────────────────────────────────
-
-def compute_education_score(cand: dict) -> float:
-    """Best education tier among all degrees."""
-    educations = cand.get("education", [])
-    if not educations:
-        return
+# ─── education score ───────────────────────────────────────────────�
