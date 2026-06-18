@@ -12,3 +12,11 @@ node_modules
 task.md
 .env.local
 .env
+
+# Competition dataset (too large for git)
+*India_runs_data_and_ai_challenge*/
+__MACOSX/
+*.DS_Store
+
+# Challenge pre-computed artifacts (binary/large)
+challenge/artifacts/

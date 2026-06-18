@@ -14,7 +14,11 @@ class Settings(BaseSettings):
     claude_fast_model: str = "claude-3-haiku-20240307"
 
     # Embeddings
-    embedding_model: str = "all-MiniLM-L6-v2"
+    embedding_provider: str = "local"            # "local" | "openai"
+    embedding_model: str = "all-MiniLM-L6-v2"   # used when provider=local
+    openai_api_key: str = ""                     # used when provider=openai
+    openai_embedding_model: str = "text-embedding-3-small"
+    openai_base_url: str = ""                    # leave blank for OpenAI default
 
     # Data
     dataset_path: str = "data/candidates.csv"
