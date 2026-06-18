@@ -148,6 +148,7 @@ def compute_final_score(
         return 0.0
 
     avail = feat.get("availability_multiplier", 1.0)
+    title_mult = feat.get("title_multiplier", 1.0)
 
     if claude_rec is not None:
         # Claude says disqualified
@@ -172,7 +173,7 @@ def compute_final_score(
             + WEIGHTS["education"]   * feat.get("education_score", 0.0)
         )
 
-    return round(min(1.0, max(0.0, combined * avail)), 6)
+    return round(min(1.0, max(0.0, combined * avail * title_mult)), 6)
 
 
 # ─── reasoning builder ────────────────────────────────────────────────────────
@@ -302,10 +303,6 @@ def main():
 
     # Quick sanity check
     if len(top) != args.top_n:
-        print(f"⚠ WARNING: only {len(top)} rows written, expected {args.top_n}")
+        print(f"WARNING: only {len(top)} rows written, expected {args.top_n}")
     else:
-        print(f"✓ Submission valid: exactly {len(top)} rows, columns: candidate_id, rank, score, reasoning")
-
-
-if __name__ == "__main__":
-    main()
+        print("Submission valid: " + str(len(top)) + " rows, columns: candidate_id, rank, score, reasoning")

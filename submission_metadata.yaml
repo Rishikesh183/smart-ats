@@ -1,0 +1,70 @@
+team_name: "smart-ats"
+
+primary_contact:
+  name: "Rishi"
+  email: "rishikeshdevarashetty@gmail.com"
+  phone: "+91-XXXXXXXXXX"
+
+team_members:
+  - name: "Rishi"
+    email: "rishikeshdevarashetty@gmail.com"
+    role: "Team Lead"
+
+github_repo: "https://github.com/Rishikesh183/smart-ats"
+
+sandbox_link: ""  # TODO: add HuggingFace Space / Colab link before final submission
+
+reproduce_command: "python challenge/rank.py --candidates ./candidates.jsonl --out ./submission.csv"
+
+compute:
+  platform: "Local Windows machine"
+  cpu_cores: 14
+  ram_gb: 16
+  python_version: "3.11"
+  os: "Windows 11"
+  uses_gpu_for_inference: false
+  has_network_during_ranking: false
+  pre_computation_required: true
+  pre_computation_time_minutes: 90
+
+ai_tools_used:
+  - "Claude"
+
+ai_usage_summary: |
+  Used Claude (via Anthropic API) in the offline pre-computation phase only:
+  Claude scores the top-500 FAISS-retrieved candidates against the JD in batches
+  of 5 (approx. 100 API calls total). No LLM calls occur during the ranking step.
+  The ranking step (rank.py) is fully local: FAISS cosine similarity + rule-based
+  feature scoring (skill match, behavioral signals, experience, education, title
+  alignment) combined with pre-computed Claude scores loaded from disk.
+  Claude was also used as a development tool for architecture discussion and code review.
+
+methodology_summary: |
+  Two-phase system:
+
+  Phase 1 — Pre-computation (offline, ~90 min):
+  All 100K candidate profiles are embedded with sentence-transformers
+  (all-MiniLM-L6-v2) and stored in a FAISS IndexFlatIP for cosine similarity.
+  The top-500 FAISS candidates for the JD are then scored by Claude
+  (claude-3-5-haiku) in batches of 5, producing a structured fit-score + reasoning
+  stored in artifacts/claude_scores.jsonl.
+
+  Phase 2 — Ranking (< 5 min, no network):
+  FAISS retrieves top candidates for the JD. Final score combines:
+    55% Claude pre-score (when available) + 45% rule-based features
+    Rule-based: skill match (proficiency × duration × endorsements),
+    behavioral signals (response rate, recency, github, assessments),
+    experience (years × product-company bonus, consulting penalty),
+    education tier, title-role alignment multiplier.
+  Honeypots (impossible profiles) and pure-consulting careers are zeroed out.
+  Behavioral twin trap: unavailable candidates (inactive > 6 months, low response
+  rate) are down-weighted via the behavioral score component.
+  Title mismatch trap: Marketing Manager / Accountant with AI keywords get a
+  0.3× multiplier regardless of skills listed.
+
+declarations:
+  read_submission_spec: true
+  code_is_original_work: true
+  no_collusion: true
+  honeypot_check_done: true
+  reproduction_tested: true
