@@ -56,7 +56,7 @@ def get_embedder():
         )
         model = os.getenv("OPENAI_EMBEDDING_MODEL", "text-embedding-3-small")
 
-        def encode_openai(texts: list[str], batch_size: int = 64) -> np.ndarray:
+        def encode_openai(texts: list[str], batch_size: int = 2048) -> np.ndarray:
             all_embs = []
             for i in range(0, len(texts), batch_size):
                 batch = texts[i : i + batch_size]
@@ -165,9 +165,9 @@ def main():
     ap.add_argument("--candidates", required=True, help="Path to candidates.jsonl")
     ap.add_argument("--out", default="artifacts", help="Output directory")
     ap.add_argument("--top-k", type=int, default=500, help="Top-K for Claude scoring")
-    ap.add_argument("--batch-size", type=int, default=5, help="Candidates per Claude call")
+    ap.add_argument("--batch-size", type=int, default=10, help="Candidates per Claude call")
     ap.add_argument("--resume", action="store_true", help="Skip already-scored candidates")
-    ap.add_argument("--model", default="claude-3-5-sonnet-20241022")
+    ap.add_argument("--model", default="claude-3-5-haiku-20241022")
     args = ap.parse_args()
 
     out_dir = Path(args.out)
@@ -319,4 +319,4 @@ def main():
             # Rate-limit: Claude Sonnet burst limit
             time.sleep(0.5)
 
-    print(f"[precompute] Done! A
+    print(f"[precompute] Done!
