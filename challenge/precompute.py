@@ -168,6 +168,8 @@ def main():
     ap.add_argument("--batch-size", type=int, default=10, help="Candidates per Claude call")
     ap.add_argument("--resume", action="store_true", help="Skip already-scored candidates")
     ap.add_argument("--model", default="claude-3-5-haiku-20241022")
+    ap.add_argument("--skip-claude", action="store_true",
+                    help="Skip Claude scoring entirely (feature-only mode, no API key needed)")
     args = ap.parse_args()
 
     out_dir = Path(args.out)
@@ -268,6 +270,14 @@ def main():
     print(f"[precompute] Top-{args.top_k} candidates retrieved.")
 
     # ── Step 4: Claude scoring (resumable) ───────────────────────────────────
+    if args.skip_claude:
+        print("[precompute] --skip-claude set: skipping LLM scoring (feature-only mode).")
+        print(f"[precompute] Done! Artifacts saved to {out_dir}/")
+        print("  * candidate_features.jsonl")
+        print("  * faiss_index.pkl")
+        print("  (no claude_scores.jsonl — rank.py will use feature-only scoring)")
+        return
+
     already_scored: set[str] = set()
     if scores_path.exists() and args.resume:
         with open(scores_path) as f:
@@ -319,4 +329,4 @@ def main():
             # Rate-limit: Claude Sonnet burst limit
             time.sleep(0.5)
 
-    print(f"[precompute] Done!
+    print(f"[precompute] Done! A
