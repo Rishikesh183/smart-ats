@@ -91,17 +91,18 @@ def load_artifacts(artifacts_dir: Path) -> tuple[dict, dict[str, dict], dict[str
     faiss_path = artifacts_dir / "faiss_index.pkl"
     features_path = artifacts_dir / "candidate_features.jsonl"
     scores_path = artifacts_dir / "claude_scores.jsonl"
+    bm25_path = artifacts_dir / "bm25_scores.jsonl"
 
     if not faiss_path.exists():
         raise FileNotFoundError(f"FAISS index not found: {faiss_path}\nRun precompute.py first.")
     if not features_path.exists():
         raise FileNotFoundError(f"Features file not found: {features_path}\nRun precompute.py first.")
 
-    print("[rank] Loading FAISS index …")
+    print("[rank] Loading FAISS index ...")
     with open(faiss_path, "rb") as f:
         faiss_data = pickle.load(f)
 
-    print("[rank] Loading candidate features …")
+    print("[rank] Loading candidate features ...")
     feat_map: dict[str, dict] = {}
     with open(features_path) as f:
         for line in f:
@@ -112,7 +113,7 @@ def load_artifacts(artifacts_dir: Path) -> tuple[dict, dict[str, dict], dict[str
 
     claude_map: dict[str, dict] = {}
     if scores_path.exists():
-        print("[rank] Loading Claude scores …")
+        print("[rank] Loading Claude scores ...")
         with open(scores_path) as f:
             for line in f:
                 line = line.strip()
@@ -123,9 +124,20 @@ def load_artifacts(artifacts_dir: Path) -> tuple[dict, dict[str, dict], dict[str
                         claude_map[cid] = rec
         print(f"[rank] Claude scores loaded for {len(claude_map):,} candidates.")
     else:
-        print("[rank] No Claude scores found — using feature-only scoring.")
+        print("[rank] No Claude scores found -- using feature-only scoring.")
 
-    return faiss_data, feat_map, claude_map
+    bm25_map: dict[str, float] = {}
+    if bm25_path.exists():
+        print("[rank] Loading BM25 scores ...")
+        with open(bm25_path) as f:
+            for line in f:
+                line = line.strip()
+                if line:
+                    rec = json.loads(line)
+                    bm25_map[rec["candidate_id"]] = rec["bm25_score_norm"]
+        print(f"[rank] BM25 scores loaded for {len(bm25_map):,} candidates.")
+
+    return faiss_data, feat_map, claude_map, bm25_map
 
 
 # ─── scoring formula ──────────────────────────────────────────────────────────
@@ -134,6 +146,7 @@ def compute_final_score(
     feat: dict,
     semantic_sim: float,
     claude_rec: dict | None,
+    bm25_score_norm: float = 0.0,
 ) -> float:
     """
     Combine Claude score (if available) with feature scores.
@@ -156,17 +169,20 @@ def compute_final_score(
             return 0.0
 
         cs = float(claude_rec.get("claude_score", 0.5))
+        # BM25 + feature component (weights sum to 1.0)
         feature_component = (
-            0.40 * feat.get("skill_score", 0.0)
-            + 0.35 * feat.get("behavioral_score", 0.0)
+            0.35 * feat.get("skill_score", 0.0)
+            + 0.30 * feat.get("behavioral_score", 0.0)
             + 0.15 * feat.get("experience_score", 0.0)
             + 0.10 * feat.get("education_score", 0.0)
+            + 0.10 * bm25_score_norm
         )
         combined = CLAUDE_WEIGHT * cs + FEATURE_WEIGHT * feature_component
     else:
-        # No Claude score — purely feature-based
+        # No Claude score -- feature-only (semantic + BM25 + structured signals)
         combined = (
             WEIGHTS["semantic"]    * semantic_sim
+            + WEIGHTS.get("bm25", 0.0) * bm25_score_norm
             + WEIGHTS["skill_match"] * feat.get("skill_score", 0.0)
             + WEIGHTS["behavioral"]  * feat.get("behavioral_score", 0.0)
             + WEIGHTS["experience"]  * feat.get("experience_score", 0.0)
@@ -222,7 +238,7 @@ def main():
     artifacts_dir = Path(args.artifacts)
 
     # ── Load artifacts ────────────────────────────────────────────────────────
-    faiss_data, feat_map, claude_map = load_artifacts(artifacts_dir)
+    faiss_data, feat_map, claude_map, bm25_map = load_artifacts(artifacts_dir)
     index = faiss_data["index"]
     ordered_ids: list[str] = faiss_data["candidate_ids"]
 
@@ -258,7 +274,8 @@ def main():
         if feat is None:
             continue
         claude_rec = claude_map.get(cid)
-        score = compute_final_score(feat, sem_sim, claude_rec)
+        bm25_norm = bm25_map.get(cid, 0.0)
+        score = compute_final_score(feat, sem_sim, claude_rec, bm25_norm)
         if score <= 0:
             continue  # skip honeypots/disqualified immediately
         results.append({
@@ -278,7 +295,7 @@ def main():
             if feat.get("is_honeypot") or feat.get("purely_consulting"):
                 continue
             claude_rec = claude_map.get(cid)
-            score = compute_final_score(feat, 0.0, claude_rec)
+            score = compute_final_score(feat, 0.0, claude_rec, bm25_map.get(cid, 0.0))
             if score > 0:
                 results.append({
                     "candidate_id": cid,
@@ -305,4 +322,8 @@ def main():
             })
 
     elapsed = time.time() - t_start
-    print(f"\n[rank] Done in {elapsed:.1f}s — {len(top)} candida
+    print(f"[rank] Done in {elapsed:.1f}s -- {len(top)} candidates ranked.")
+
+
+if __name__ == "__main__":
+    main()

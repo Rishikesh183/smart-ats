@@ -224,4 +224,74 @@ def compute_experience_score(cand: dict) -> tuple[float, bool]:
     return exp_score, is_purely_consulting
 
 
-# ─── education score ───────────────────────────────────────────────�
+# --- education score ---------------------------------------------------------
+
+def compute_education_score(cand: dict) -> float:
+    """Score 0-1 based on education tier."""
+    from jd import EDUCATION_TIER_SCORE
+    edu_list = cand.get("education", [])
+    if not edu_list:
+        return EDUCATION_TIER_SCORE.get("unknown", 0.40)
+    best = 0.0
+    for edu in edu_list:
+        tier = _lower(edu.get("institution_tier", "unknown"))
+        score = EDUCATION_TIER_SCORE.get(tier, EDUCATION_TIER_SCORE.get("unknown", 0.40))
+        best = max(best, score)
+    return best
+
+
+# --- availability multiplier --------------------------------------------------
+
+def compute_availability_multiplier(cand: dict) -> float:
+    """
+    Returns 1.0 if candidate is India-based or open to relocation.
+    Returns 0.6 if location is unknown.
+    Returns 0.3 if clearly outside India with no relocation flag.
+    """
+    from jd import PREFERRED_LOCATIONS
+    p = cand.get("profile", {})
+    location = _lower(p.get("location", ""))
+    open_to_reloc = bool(p.get("open_to_relocation", False))
+
+    if not location:
+        return 0.60  # unknown
+
+    for loc in PREFERRED_LOCATIONS:
+        if loc in location:
+            return 1.0
+
+    if open_to_reloc:
+        return 0.90  # willing to relocate
+
+    return 0.30  # outside India, not relocating
+
+
+# --- main feature extractor ---------------------------------------------------
+
+def extract_features(cand: dict) -> dict:
+    """
+    Run all feature extractors and return a flat dict of scores.
+    profile_text is included here (used for embeddings); stripped before saving to disk.
+    """
+    p = cand.get("profile", {})
+
+    skill_score = compute_skill_score(cand)
+    exp_score, purely_consulting = compute_experience_score(cand)
+    edu_score = compute_education_score(cand)
+    avail_mult = compute_availability_multiplier(cand)
+    title_mult = compute_title_alignment(_lower(p.get("current_title", "")))
+    profile_text = build_profile_text(cand)
+
+    return {
+        "candidate_id":           cand.get("candidate_id", ""),
+        "skill_score":            round(skill_score, 4),
+        "experience_score":       round(exp_score, 4),
+        "education_score":        round(edu_score, 4),
+        "availability_multiplier": round(avail_mult, 4),
+        "title_multiplier":       round(title_mult, 4),
+        "purely_consulting":      purely_consulting,
+        "years_of_experience":    p.get("years_of_experience", 0) or 0,
+        "location":               p.get("location", ""),
+        "current_title":          p.get("current_title", ""),
+        "profile_text":           profile_text,
+    }
