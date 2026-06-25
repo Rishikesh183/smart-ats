@@ -17,6 +17,56 @@ from jd import (
     TARGET_SKILLS,
 )
 
+# ─── title alignment ─────────────────────────────────────────────────────────
+
+# Titles that signal genuine AI/ML/Engineering background
+_AI_TITLE_KEYWORDS = {
+    "ai", "ml", "machine learning", "data scientist", "data science",
+    "nlp", "deep learning", "research engineer", "applied scientist",
+    "software engineer", "software developer", "backend engineer",
+    "fullstack engineer", "full stack", "platform engineer",
+    "mlops", "data engineer", "retrieval", "search engineer",
+    "ranking engineer", "recommendation", "engineer", "architect",
+    "tech lead", "principal engineer", "staff engineer",
+}
+
+# Titles that are explicit mismatches regardless of skills listed
+_UNRELATED_TITLES = {
+    "marketing manager", "marketing executive", "content writer", "content creator",
+    "hr manager", "hr executive", "human resources", "recruiter",
+    "accountant", "finance manager", "financial analyst", "chartered accountant",
+    "graphic designer", "ui designer", "ux designer", "visual designer",
+    "sales executive", "sales manager", "business development",
+    "civil engineer", "mechanical engineer", "electrical engineer",
+    "operations manager", "supply chain", "logistics",
+    "customer support", "customer success", "customer service",
+    "project manager",   # ambiguous but not technical enough for this JD
+}
+
+
+def compute_title_alignment(current_title: str) -> float:
+    """
+    Returns a multiplier 0.3–1.0 based on how well the current job title
+    aligns with a Senior AI Engineer role.
+    The JD explicitly warns: Marketing Manager with all AI keywords ≠ fit.
+    """
+    title_lower = _lower(current_title)
+    if not title_lower:
+        return 0.70  # unknown — don't fully penalize
+
+    # Exact unrelated match → heavy penalty
+    for unrelated in _UNRELATED_TITLES:
+        if unrelated in title_lower:
+            return 0.30
+
+    # AI/engineering keyword in title → no penalty
+    for ai_kw in _AI_TITLE_KEYWORDS:
+        if ai_kw in title_lower:
+            return 1.00
+
+    # Ambiguous (e.g. "consultant", "analyst") → mild penalty
+    return 0.65
+
 
 # ─── helpers ────────────────────────────────────────────────────────────────
 
@@ -158,11 +208,14 @@ def compute_experience_score(cand: dict) -> tuple[float, bool]:
     else:
         is_purely_consulting = False
 
-    # Bonus for product-company experience (company_size signals)
+    # Bonus for product-company experience
+    # Schema company_size values: "1-10","11-50","51-200","201-500","501-1000","1001-5000","5001-10000","10001+"
+    # Smaller companies more likely to be product companies (excluding big consulting)
+    product_sizes = {"1-10", "11-50", "51-200", "201-500", "501-1000"}
     product_months = sum(
         j.get("duration_months", 0) or 0
         for j in history
-        if j.get("company_size", "") in ("startup", "scaleup", "mid-size", "enterprise")
+        if j.get("company_size", "") in product_sizes
         and not any(f in _lower(j.get("company", "")) for f in CONSULTING_FIRMS)
     )
     if product_months >= 36:
@@ -171,70 +224,74 @@ def compute_experience_score(cand: dict) -> tuple[float, bool]:
     return exp_score, is_purely_consulting
 
 
-# ─── education score ──────────────────────────────────────────────────────────
+# --- education score ---------------------------------------------------------
 
 def compute_education_score(cand: dict) -> float:
-    """Best education tier among all degrees."""
-    educations = cand.get("education", [])
-    if not educations:
-        return EDUCATION_TIER_SCORE["unknown"]
-    best = max(
-        EDUCATION_TIER_SCORE.get(_lower(edu.get("tier", "")), EDUCATION_TIER_SCORE["unknown"])
-        for edu in educations
-    )
+    """Score 0-1 based on education tier."""
+    from jd import EDUCATION_TIER_SCORE
+    edu_list = cand.get("education", [])
+    if not edu_list:
+        return EDUCATION_TIER_SCORE.get("unknown", 0.40)
+    best = 0.0
+    for edu in edu_list:
+        tier = _lower(edu.get("institution_tier", "unknown"))
+        score = EDUCATION_TIER_SCORE.get(tier, EDUCATION_TIER_SCORE.get("unknown", 0.40))
+        best = max(best, score)
     return best
 
 
-# ─── location / availability multiplier ──────────────────────────────────────
+# --- availability multiplier --------------------------------------------------
 
 def compute_availability_multiplier(cand: dict) -> float:
-    """1.0 if India-based or willing to relocate, 0.6 otherwise."""
+    """
+    Returns 1.0 if candidate is India-based or open to relocation.
+    Returns 0.6 if location is unknown.
+    Returns 0.3 if clearly outside India with no relocation flag.
+    """
+    from jd import PREFERRED_LOCATIONS
     p = cand.get("profile", {})
     location = _lower(p.get("location", ""))
-    country = _lower(p.get("country", ""))
-    signals = cand.get("redrob_signals", {})
-    willing = signals.get("willing_to_relocate", False)
+    open_to_reloc = bool(p.get("open_to_relocation", False))
 
-    in_india = (
-        "india" in location
-        or "india" in country
-        or any(loc in location for loc in PREFERRED_LOCATIONS)
-    )
+    if not location:
+        return 0.60  # unknown
 
-    if in_india or willing:
-        return 1.0
-    return 0.65
+    for loc in PREFERRED_LOCATIONS:
+        if loc in location:
+            return 1.0
+
+    if open_to_reloc:
+        return 0.90  # willing to relocate
+
+    return 0.30  # outside India, not relocating
 
 
-# ─── full feature extraction ──────────────────────────────────────────────────
+# --- main feature extractor ---------------------------------------------------
 
 def extract_features(cand: dict) -> dict:
     """
-    Returns a flat dict of numeric features + metadata.
-    Used by both precompute (embed) and rank (score formula).
+    Run all feature extractors and return a flat dict of scores.
+    profile_text is included here (used for embeddings); stripped before saving to disk.
     """
-    cid = cand.get("candidate_id", "")
     p = cand.get("profile", {})
 
-    profile_text = build_profile_text(cand)
     skill_score = compute_skill_score(cand)
     exp_score, purely_consulting = compute_experience_score(cand)
     edu_score = compute_education_score(cand)
     avail_mult = compute_availability_multiplier(cand)
-
-    years = p.get("years_of_experience", 0) or 0
+    title_mult = compute_title_alignment(_lower(p.get("current_title", "")))
+    profile_text = build_profile_text(cand)
 
     return {
-        "candidate_id": cid,
-        "profile_text": profile_text,
-        "skill_score": round(skill_score, 4),
-        "experience_score": round(exp_score, 4),
-        "education_score": round(edu_score, 4),
+        "candidate_id":           cand.get("candidate_id", ""),
+        "skill_score":            round(skill_score, 4),
+        "experience_score":       round(exp_score, 4),
+        "education_score":        round(edu_score, 4),
         "availability_multiplier": round(avail_mult, 4),
-        "years_of_experience": years,
-        "purely_consulting": purely_consulting,
-        "location": _lower(p.get("location", "")),
-        "country": _lower(p.get("country", "")),
-        "current_title": p.get("current_title", ""),
-        "headline": p.get("headline", ""),
+        "title_multiplier":       round(title_mult, 4),
+        "purely_consulting":      purely_consulting,
+        "years_of_experience":    p.get("years_of_experience", 0) or 0,
+        "location":               p.get("location", ""),
+        "current_title":          p.get("current_title", ""),
+        "profile_text":           profile_text,
     }

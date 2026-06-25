@@ -1,202 +1,200 @@
-# Smart ATS — Semantic Candidate Ranking
+# smart-ats — India Runs Data & AI Challenge
 
-An AI recruiting pipeline that ranks candidates the way a great recruiter would — by understanding what a role *actually needs*, not by matching keywords.
-
-**Prime directive: don't lose a good candidate.**
-
----
-
-## What it does
-
-1. **Pass 1 — Rubric Builder**: LLM reads the JD and outputs a structured, editable rubric (parameters, weights, anchors, hard gates). A recruiter can inspect and tweak it before any candidate is scored.
-
-2. **Stage 1 — Semantic Retrieval**: Embeds all candidate profiles with `sentence-transformers`, builds a FAISS index, retrieves the top-N most semantically similar candidates. Banded into `advance / rescue / drop` — equivalent stacks (Vue≈React, SvelteKit≈Next.js, Remix≈Next.js) surface naturally.
-
-3. **Stage 2 — Intelligent Gates**: Only true must-haves (work authorization, mandatory licenses) can drop a candidate. Never kills candidates for missing a specific keyword.
-
-4. **Stage 3 — Evidence-Grounded Scoring**: LLM scores each candidate on each rubric parameter with exact verbatim evidence spans. No score exists without a cited source.
-
-5. **Stage 4a — Critic Agent** (high/extra-high modes): Re-scores rescue-band candidates who fell just below the retrieval cutoff. Recovers candidates with equivalent stacks, career switchers, and low-keyword-but-high-signal writers.
-
-6. **Stage 4b — Comparative Re-rank**: LLM produces an internally consistent final ordering of the top finalists.
-
-7. **Output**: Ranked shortlist with explainable evidence per parameter + rescued-candidates report.
+Candidate ranking pipeline for the Redrob AI Hackathon (Hack2Skill).
+Ranks 100,000 candidates for a Senior AI Engineer JD and outputs a ranked
+`submission.csv` of exactly 100 candidates.
 
 ---
 
-## Recall demo (the headline metric)
+## Architecture
 
-The planted-candidate recall test injects 5 known-strong-but-keyword-poor candidates:
+Two-phase design so the slow API work happens once offline, and ranking is fast:
 
-| Candidate | Why keyword-poor |
-|---|---|
-| C002 Priya Sharma | Vue/Nuxt instead of React/Next.js |
-| C003 Marcus Williams | Career switcher, Next.js learner |
-| C009 Dmitri Volkov | SvelteKit (architecturally identical to Next.js) |
-| C014 Gabriela Souza | Remix (same SSR paradigm as Next.js) |
-| C020 Yuki Tanaka | Built Next.js adapter but no "Next.js projects" |
+**Phase 1 -- Pre-computation (run once, ~30-90 min)**
 
-Expected results:
+1. Load all 100K candidate profiles from `candidates.jsonl`
+2. Extract structured features per candidate (skills, experience, education, honeypot flags)
+3. Build BM25 keyword index (unigram + bigram + trigram, stopword-cleaned)
+4. Embed all profiles with `text-embedding-3-small` (OpenAI) -> FAISS IndexFlatIP
+5. Hybrid retrieval: BM25 top-1000 + FAISS top-1000 -> Reciprocal Rank Fusion -> top-500
+6. Score top-500 with Claude / OpenRouter LLM in batches
+7. Save artifacts to `artifacts/`
 
-| Mode | Planted recall | Shortlisted | Rescued |
-|---|---|---|---|
-| normal | ~40–60% | ~8–12 | 0 |
-| high | ~60–80% | ~10–14 | 2–4 |
-| extra_high | ~80–100% | ~12–16 | 3–5 |
+**Phase 2 -- Ranking (< 5 min, no network)**
+
+1. Load all artifacts from disk
+2. FAISS search + BM25 scores to retrieve and score candidates
+3. Final score formula (with Claude):
+   `0.55 * claude_score + 0.45 * (0.35*skill + 0.30*behavioral + 0.15*exp + 0.10*edu + 0.10*bm25)`
+4. Apply multipliers: availability, title-role alignment
+5. Zero out honeypots and all-consulting careers
+6. Output `submission.csv` with 100 ranked rows
 
 ---
 
-## Setup
+## Scoring signals
 
-### Prerequisites
+- **Skill match** -- proficiency * endorsements * duration vs 25+ TARGET_SKILLS
+- **BM25 keyword** -- n-gram overlap between profile and JD (k1=1.2 saturation handles stuffing)
+- **Semantic similarity** -- FAISS cosine similarity via OpenAI embeddings
+- **Behavioral** -- 23 redrob_signals (response rate, GitHub, assessment scores, recency)
+- **Experience** -- 5-9y ideal band; product-company bonus; consulting penalty
+- **Education** -- institution tier (PhD/Masters/BTech)
+- **Title alignment** -- Marketing Manager + AI keywords = 0.30x multiplier
+- **Availability** -- India-based = 1.0x; outside India, no relocation = 0.3x
+- **Honeypot detection** -- 7 rules (H1-H7) for impossible/synthetic profiles
 
-- Python 3.11+
-- Node.js 20+
-- An Anthropic API key (or OpenRouter)
+---
 
-### Local (no Docker)
+## Setup (Mac)
 
 ```bash
-# 1. Clone and enter the project
-cd smart-ats
-
-# 2. Copy env and fill in your API key
-cp .env.example .env
-# Edit .env: set ANTHROPIC_API_KEY=sk-ant-...
-
-# 3. Backend
-cd backend
+cd challenge
 pip install -r requirements.txt
-
-# Generate the synthetic dataset (already committed, but re-runnable)
-python data/generate_dataset.py
-
-# Verify everything works
-python -m app.data.ingest
-
-# Start the API server
-uvicorn app.main:app --reload --port 8000
-
-# 4. Frontend (new terminal)
-cd ../frontend
-npm install
-npm run dev
-# → http://localhost:3000
 ```
 
-### Docker (one-command)
+> `sentence-transformers` is large (~500MB). If pip is slow:
+> `pip install --no-cache-dir -r requirements.txt`
+
+Set API keys (do NOT commit these):
 
 ```bash
-cp .env.example .env
-# Edit .env: set ANTHROPIC_API_KEY=sk-ant-...
-docker compose up --build
-# → Frontend: http://localhost:3000
-# → API:      http://localhost:8000
-```
+export OPENAI_API_KEY="sk-..."
+export EMBEDDING_PROVIDER="openai"
 
-> **Note:** First start downloads the `all-MiniLM-L6-v2` embedding model (~80MB). The Docker image pre-downloads it at build time.
+# Option A: Claude for LLM scoring
+export ANTHROPIC_API_KEY="sk-ant-..."
+
+# Option B: OpenRouter free LLM (saves ~$0.50, same quality)
+export LLM_PROVIDER="openrouter"
+export OPENROUTER_API_KEY="sk-or-v1-..."
+export OPENROUTER_MODEL="meta-llama/llama-3.3-70b-instruct:free"
+```
 
 ---
 
-## Running the eval harness
+## Run — Phase 1: Pre-computation
 
 ```bash
-cd backend
+cd challenge
 
-# Recall test across all modes (takes ~5-10 min, uses LLM for all modes)
-python -m eval.planted
-
-# Explainability + determinism check
-python -m eval.checks
+python precompute.py \
+  --candidates "../[PUB] India_runs_data_and_ai_challenge/India_runs_data_and_ai_challenge/candidates.jsonl" \
+  --out artifacts/ \
+  --top-k 500 \
+  --batch-size 10 \
+  --resume
 ```
 
-Or trigger via the UI: click **📊 Eval Harness** in the top-right, then **Run Eval**.
+`--resume` safely restarts if interrupted (skips already-scored candidates).
+
+Expected output in `artifacts/`:
+- `faiss_index.pkl` -- FAISS index (~400MB)
+- `candidate_features.jsonl` -- per-candidate feature scores
+- `bm25_scores.jsonl` -- normalized BM25 scores
+- `claude_scores.jsonl` -- LLM scores for top-500
+- `feature_scores.csv` -- spreadsheet view of all features
+- `jd_embedding.npy` -- JD vector
 
 ---
 
-## API reference
+## Run -- Phase 2: Rank
 
-| Endpoint | Method | Description |
+```bash
+python rank.py \
+  --candidates "../[PUB] India_runs_data_and_ai_challenge/India_runs_data_and_ai_challenge/candidates.jsonl" \
+  --artifacts artifacts/ \
+  --out submission.csv
+```
+
+---
+
+## Validate
+
+```bash
+python "../[PUB] India_runs_data_and_ai_challenge/India_runs_data_and_ai_challenge/validate_submission.py" submission.csv
+```
+
+---
+
+## Inspect candidates
+
+```bash
+# View full profile for any candidate ID
+python inspect_candidates.py CAND_0011555 CAND_0087783
+
+# View top 3 from your submission
+ids=$(tail -n +2 submission.csv | head -3 | cut -d',' -f1 | tr '\n' ' ')
+python inspect_candidates.py $ids
+```
+
+---
+
+## Cost estimate
+
+| Step | Provider | Cost |
 |---|---|---|
-| `/health` | GET | Liveness check |
-| `/rubric` | POST | Build rubric from JD `{"job_description": "..."}` |
-| `/rubric` | PUT | Accept edited rubric |
-| `/rank` | POST | Run pipeline `{"job_description": "...", "mode": "normal\|high\|extra_high", "rubric": {...}}` |
-| `/result` | GET | Fetch last result |
-| `/eval` | POST | Run eval harness `{"modes": ["normal", "high", "extra_high"]}` |
-| `/candidates` | GET | List all candidates (debug) |
+| Embeddings (100K profiles) | OpenAI text-embedding-3-small | ~$1.50 |
+| LLM scoring (500 candidates) | Claude Haiku | ~$0.50 |
+| LLM scoring (500 candidates) | OpenRouter Llama 3.3 70B free | $0.00 |
+
+Cheapest real run: OpenAI embeddings + OpenRouter free LLM = ~$1.50 total.
+
+---
+
+## Test without spending money
+
+```bash
+# Sample 1000 candidates
+python sample.py \
+  --candidates "../[PUB] India_runs_data_and_ai_challenge/India_runs_data_and_ai_challenge/candidates.jsonl" \
+  --out sample_1000.jsonl \
+  --n 1000 --seed 42
+
+# Run with local (free) embeddings, skip LLM
+EMBEDDING_PROVIDER=local python precompute.py \
+  --candidates sample_1000.jsonl \
+  --out artifacts_test/ \
+  --top-k 50 \
+  --skip-claude
+
+# Rank
+python rank.py \
+  --candidates sample_1000.jsonl \
+  --artifacts artifacts_test/ \
+  --out submission_test.csv \
+  --top-n 10
+
+# Inspect top 3
+ids=$(tail -n +2 submission_test.csv | head -3 | cut -d',' -f1 | tr '\n' ' ')
+python inspect_candidates.py --candidates sample_1000.jsonl $ids
+```
 
 ---
 
 ## Project structure
 
 ```
-smart-ats/
-├── .env.example
-├── docker-compose.yml
-├── backend/
-│   ├── Dockerfile
-│   ├── requirements.txt
-│   ├── data/
-│   │   ├── generate_dataset.py   # generates candidates.csv
-│   │   └── candidates.csv        # 20 synthetic candidates (5 planted)
-│   ├── app/
-│   │   ├── config.py             # settings (pydantic-settings)
-│   │   ├── models.py             # all pydantic models
-│   │   ├── main.py               # FastAPI app + endpoints
-│   │   ├── run.py                # pipeline orchestrator
-│   │   ├── llm/
-│   │   │   ├── client.py         # LLMClient interface (Anthropic + OpenRouter)
-│   │   │   └── prompts.py        # all prompts (rubric, scorer, critic, rerank)
-│   │   ├── data/
-│   │   │   ├── ingest.py         # load CSV/JSON dataset
-│   │   │   └── normalize.py      # → CandidateProfile
-│   │   └── pipeline/
-│   │       ├── rubric.py         # Pass 1
-│   │       ├── extract.py        # Stage 0
-│   │       ├── retrieval.py      # Stage 1 + FAISS + rescue band
-│   │       ├── gates.py          # Stage 2
-│   │       ├── scorer.py         # Stage 3
-│   │       ├── critic.py         # Stage 4a (rescue band critic)
-│   │       └── rerank.py         # Stage 4b (comparative re-rank)
-│   └── eval/
-│       ├── planted.py            # recall test
-│       └── checks.py             # explainability + determinism
-└── frontend/
-    └── src/
-        ├── app/
-        │   ├── layout.tsx
-        │   ├── page.tsx          # main UI (JD → rubric → ranked list)
-        │   └── globals.css
-        ├── components/
-        │   ├── CandidateCard.tsx # expandable card with evidence per parameter
-        │   ├── RubricEditor.tsx  # inline rubric editing modal
-        │   └── EvalPanel.tsx     # recall metrics UI
-        └── lib/
-            └── api.ts            # typed API client
+challenge/
+  jd.py                  -- JD text, TARGET_SKILLS, scoring weights
+  features.py            -- Skill / experience / education / title extraction
+  behavioral.py          -- 23 redrob_signals -> behavioral score
+  honeypot.py            -- 7 honeypot detection rules
+  retrieval.py           -- BM25Retriever, hybrid_retrieve (RRF), n-gram preprocessing
+  precompute.py          -- Phase 1: embed + FAISS + BM25 + LLM scoring
+  rank.py                -- Phase 2: load artifacts -> submission.csv
+  sample.py              -- Extract N random candidates for testing
+  inspect_candidates.py  -- Print full profile for given candidate IDs
+  requirements.txt
+
+submission.csv             -- Final output (100 rows)
+submission_metadata.yaml   -- Submission metadata
 ```
 
 ---
 
-## Key design principles implemented
+## Requirements
 
-- **Semantic equivalence**: Vue≈React, SvelteKit≈Next.js, Remix≈Next.js — the LLM justifies equivalence direction in every score.
-- **Rubric-first**: JD understanding and candidate scoring are separate passes. The rubric is a first-class, editable artifact.
-- **Evidence or nothing**: Every score cites verbatim spans. Missing evidence → lower confidence, not inflated score.
-- **Funnel for cost**: Cheap embeddings filter first (~500→50); expensive LLM scoring runs only on survivors.
-- **Recall knob**: Three modes trade compute for fewer missed candidates. The UI is honest about this trade-off.
-
----
-
-## Swapping providers
-
-The `LLMClient` in `app/llm/client.py` is the only file with provider-specific code. To switch:
-
-```env
-# .env
-LLM_PROVIDER=openrouter
-OPENROUTER_API_KEY=sk-or-...
-OPENROUTER_MODEL=anthropic/claude-3-haiku
-```
-
-Embeddings can be swapped by changing `EMBEDDING_MODEL` in `.env` — any `sentence-transformers` model works. The FAISS index is re-built and cached automatically.
+- Python 3.11+
+- `OPENAI_API_KEY` (for embeddings; or set `EMBEDDING_PROVIDER=local` to use sentence-transformers)
+- `ANTHROPIC_API_KEY` or `OPENROUTER_API_KEY` (for LLM scoring; or `--skip-claude` to skip)

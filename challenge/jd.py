@@ -101,9 +101,11 @@ EDUCATION_TIER_SCORE = {
     "unknown": 0.40,
 }
 
-# Final score weights
+# Final score weights (feature-only mode, when no Claude score available)
+# bm25 + semantic together replace the old pure-semantic weight
 WEIGHTS = {
-    "semantic":    0.35,
+    "semantic":    0.23,
+    "bm25":        0.12,
     "skill_match": 0.28,
     "behavioral":  0.22,
     "experience":  0.10,
