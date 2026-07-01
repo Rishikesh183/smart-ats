@@ -12,7 +12,7 @@ Usage:
 Output artifacts:
   artifacts/faiss_index.pkl           - FAISS index + candidate_id list
   artifacts/candidate_features.jsonl  - per-candidate feature dict (all 100K)
-  artifacts/claude_scores.jsonl       - LLM scores for top-K (resumable)
+  artifacts/llm_scores.jsonl          - LLM scores for top-K (resumable)
   artifacts/bm25_scores.jsonl         - Normalized BM25 scores (all candidates)
   artifacts/feature_scores.csv        - Per-candidate features in CSV format
   artifacts/jd_embedding.npy          - JD embedding vector
@@ -286,7 +286,7 @@ def main():
 
     features_path = out_dir / "candidate_features.jsonl"
     faiss_path = out_dir / "faiss_index.pkl"
-    scores_path = out_dir / "claude_scores.jsonl"
+    scores_path = out_dir / "llm_scores.jsonl"
     bm25_scores_path = out_dir / "bm25_scores.jsonl"
     feature_csv_path = out_dir / "feature_scores.csv"
 
@@ -537,7 +537,7 @@ def main():
     print(f"[precompute] Done! Artifacts in {out_dir}/")
     print("  * candidate_features.jsonl")
     print("  * faiss_index.pkl")
-    print("  * claude_scores.jsonl")
+    print("  * llm_scores.jsonl")
     if not args.no_bm25 and bm25_sorted_ids:
         print("  * bm25_scores.jsonl")
     print("  * feature_scores.csv")

@@ -90,7 +90,7 @@ def load_artifacts(artifacts_dir: Path) -> tuple[dict, dict[str, dict], dict[str
     """
     faiss_path = artifacts_dir / "faiss_index.pkl"
     features_path = artifacts_dir / "candidate_features.jsonl"
-    scores_path = artifacts_dir / "claude_scores.jsonl"
+    scores_path = artifacts_dir / "llm_scores.jsonl"
     bm25_path = artifacts_dir / "bm25_scores.jsonl"
 
     if not faiss_path.exists():
