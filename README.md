@@ -363,7 +363,7 @@ python rank.py \
 
 ## 👥 Team — Omni Coders
 
-**Rishi Kesh** · **Narra Satya Sai Charan**
+**Rishi Kesh** · **Narra Satya Sai Charan** . **Kirpal Singh**
 
 ---
 
