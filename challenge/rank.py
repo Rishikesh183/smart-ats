@@ -90,7 +90,7 @@ def load_artifacts(artifacts_dir: Path) -> tuple[dict, dict[str, dict], dict[str
     """
     faiss_path = artifacts_dir / "faiss_index.pkl"
     features_path = artifacts_dir / "candidate_features.jsonl"
-    scores_path = artifacts_dir / "claude_scores.jsonl"
+    scores_path = artifacts_dir / "llm_scores.jsonl"
     bm25_path = artifacts_dir / "bm25_scores.jsonl"
 
     if not faiss_path.exists():
@@ -252,18 +252,35 @@ def main():
         encode = get_local_embedder()
         jd_emb = encode([JD_TEXT]).astype(np.float32)
 
-    # ── FAISS search — retrieve top candidates ────────────────────────────────
-    # Retrieve more than 100 so we have buffer after filtering honeypots
+    # ── Hybrid BM25+FAISS retrieval (RRF) ─────────────────────────────────────
+    # Mirrors precompute.py's hybrid_retrieve() so the pool we rank here
+    # overlaps with the pool precompute.py actually sent to the LLM, instead
+    # of a FAISS-only search that mostly misses the LLM-scored candidates.
     retrieve_n = min(len(ordered_ids), max(2000, args.top_n * 20))
-    print(f"[rank] FAISS search: top-{retrieve_n} …")
-    sim_scores, indices = index.search(jd_emb, retrieve_n)
+    faiss_pool_n = min(len(ordered_ids), max(retrieve_n * 2, 4000))
+    print(f"[rank] FAISS search: top-{faiss_pool_n} …")
+    sim_scores, indices = index.search(jd_emb, faiss_pool_n)
 
-    candidates_to_score: list[tuple[str, float]] = []
+    sim_map: dict[str, float] = {}
+    faiss_ranked_ids: list[str] = []
     for idx, sim in zip(indices[0], sim_scores[0]):
         if idx < 0:
             continue
         cid = ordered_ids[idx]
-        candidates_to_score.append((cid, float(sim)))
+        sim_map[cid] = float(sim)
+        faiss_ranked_ids.append(cid)
+
+    if bm25_map:
+        from retrieval import hybrid_retrieve  # type: ignore
+        bm25_ranked_ids = sorted(bm25_map, key=lambda x: bm25_map[x], reverse=True)[:faiss_pool_n]
+        retrieved_ids = hybrid_retrieve(bm25_ranked_ids, faiss_ranked_ids, top_k=retrieve_n)
+        print(f"[rank] Hybrid BM25+FAISS -> {len(retrieved_ids)} candidates.")
+    else:
+        retrieved_ids = faiss_ranked_ids[:retrieve_n]
+
+    candidates_to_score: list[tuple[str, float]] = [
+        (cid, sim_map.get(cid, 0.0)) for cid in retrieved_ids
+    ]
 
     print(f"[rank] {len(candidates_to_score):,} candidates to score …")
 
@@ -305,7 +322,8 @@ def main():
                 })
 
     # ── Sort and take top-N ───────────────────────────────────────────────────
-    results.sort(key=lambda x: x["score"], reverse=True)
+    # Tie-break: equal scores ordered by candidate_id ascending (per submission spec)
+    results.sort(key=lambda x: (-x["score"], x["candidate_id"]))
     top = results[: args.top_n]
 
     # ── Write submission.csv ──────────────────────────────────────────────────

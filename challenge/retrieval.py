@@ -43,7 +43,7 @@ def _get_stopwords() -> set:
             nltk.download("stopwords", quiet=True)
             from nltk.corpus import stopwords
             return set(stopwords.words("english"))
-    except ImportError:
+    except Exception:
         return _BUILTIN_STOPWORDS
 
 
