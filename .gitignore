@@ -12,7 +12,7 @@ node_modules
 task.md
 .env.local
 .env
-
+venv
 # Competition dataset (too large for git)
 *India_runs_data_and_ai_challenge*/
 __MACOSX/

@@ -70,11 +70,22 @@ def get_embedder():
         )
         model = os.getenv("OPENAI_EMBEDDING_MODEL", "text-embedding-3-small")
 
-        def encode_openai(texts, batch_size=2048):
+        def encode_openai(texts, batch_size=256):  # 256 * ~910 tok max = ~233k < 300k limit
             all_embs = []
             for i in range(0, len(texts), batch_size):
-                batch = texts[i : i + batch_size]
-                resp = client.embeddings.create(model=model, input=batch)
+                # OpenAI rejects empty strings — replace with placeholder
+                batch = [t if t and t.strip() else "[no profile]" for t in texts[i : i + batch_size]]
+                for attempt in range(8):
+                    try:
+                        resp = client.embeddings.create(model=model, input=batch)
+                        break
+                    except Exception as _e:
+                        if "429" in str(_e) or "rate_limit" in str(_e).lower():
+                            wait = 15 * (attempt + 1)
+                            print(f"[embed] Rate limited — waiting {wait}s (attempt {attempt+1}/8) ...")
+                            time.sleep(wait)
+                        else:
+                            raise
                 vecs = [e.embedding for e in resp.data]
                 all_embs.extend(vecs)
             arr = np.array(all_embs, dtype=np.float32)
@@ -83,6 +94,23 @@ def get_embedder():
             return arr / norms
 
         return encode_openai
+    elif provider == "ollama":
+        import ollama
+        model = os.getenv("OLLAMA_EMBED_MODEL", "embeddinggemma")
+
+        def encode_ollama(texts, batch_size=64):
+            all_embs = []
+            for i in range(0, len(texts), batch_size):
+                batch = texts[i : i + batch_size]
+                resp = ollama.embed(model=model, input=batch)
+                vecs = resp["embeddings"]
+                all_embs.extend(vecs)
+            arr = np.array(all_embs, dtype=np.float32)
+            norms = np.linalg.norm(arr, axis=1, keepdims=True)
+            norms = np.where(norms == 0, 1, norms)
+            return arr / norms
+
+        return encode_ollama
     else:
         from sentence_transformers import SentenceTransformer
         model_name = os.getenv("EMBEDDING_MODEL", "all-MiniLM-L6-v2")
@@ -166,7 +194,10 @@ def score_with_llm(candidates_batch, jd, model="claude-3-5-haiku-20241022", max_
                 raw = resp.choices[0].message.content or ""
             elif provider == "openai":
                 from openai import OpenAI
-                client = OpenAI(api_key=os.getenv("OPENAI_API_KEY", ""))
+                client = OpenAI(
+                    api_key=os.getenv("OPENAI_API_KEY", ""),
+                    base_url=os.getenv("OPENAI_BASE_URL") or None,
+                )
                 resp = client.chat.completions.create(
                     model=os.getenv("OPENAI_CHAT_MODEL", "gpt-4o-mini"),
                     messages=[{"role": "user", "content": prompt}],
@@ -185,6 +216,18 @@ def score_with_llm(candidates_batch, jd, model="claude-3-5-haiku-20241022", max_
 
             results = _parse_llm_response(raw)
             if isinstance(results, list):
+                # Sanity-clamp claude_score to [0,1]. Smaller local models (e.g. qwen2.5:3b)
+                # sometimes ignore the "0-1 float" instruction and answer on a 0-10 scale
+                # instead, which silently ceilings to a false 1.0 downstream. Rescale any
+                # out-of-range value before it ever hits disk.
+                for rec in results:
+                    s = rec.get("claude_score")
+                    if isinstance(s, (int, float)):
+                        if s > 1:
+                            s = s / 10.0
+                        rec["claude_score"] = round(min(1.0, max(0.0, s)), 4)
+                    else:
+                        rec["claude_score"] = 0.5
                 return results
 
         except Exception as e:
@@ -314,8 +357,23 @@ def main():
         valid_features = [f for f in all_features if not f.get("is_honeypot")]
         print(f"[precompute] Embedding {len(valid_features):,} valid candidates ...")
 
-        texts = [f.get("profile_text", f.get("headline", "")) for f in valid_features]
         ordered_ids = [f["candidate_id"] for f in valid_features]
+        texts = [f.get("profile_text", f.get("headline", "")) for f in valid_features]
+
+        # In resume mode, profile_text is stripped from saved features.
+        # Re-read candidates.jsonl to rebuild profile texts when needed.
+        if not any(t.strip() for t in texts[:20]):
+            print("[precompute] profile_text missing from features (resume mode) -- reloading from candidates file ...")
+            text_lookup: dict[str, str] = {}
+            with open(args.candidates) as _cf:
+                for _line in _cf:
+                    _line = _line.strip()
+                    if not _line:
+                        continue
+                    _cand = json.loads(_line)
+                    text_lookup[_cand["candidate_id"]] = build_profile_text(_cand)
+            texts = [text_lookup.get(cid, "[no profile]") for cid in ordered_ids]
+            print(f"[precompute] Texts reloaded for {sum(1 for t in texts if t.strip()):,} candidates.")
 
         chunk = 4096
         all_embs = []
